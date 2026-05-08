@@ -2,6 +2,8 @@
 name = "seekwel-forms"
 version = "0.1.0"
 edition = "2024"
+license = "BSD-3-Clause"
+description = "Generate HTML forms from seekwel models"
 
 [dependencies]
 inflection = "0.1.2"
