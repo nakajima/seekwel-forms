@@ -1,0 +1,10 @@
+[package]
+name = "seekwel-forms"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+inflection = "0.1.2"
+maud = "0.27.0"
+rusqlite = "0.39.0"
+seekwel = { path = "../seekwel" }
