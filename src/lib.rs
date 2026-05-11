@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use inflection::{plural, singular};
 use maud::{Markup, Render, html};
 use rusqlite::types::Value;
-use seekwel::model::{Column, ColumnDef, Model, ModelRecord};
+use seekwel::model::{Column, ColumnDef, Errors, InvalidModel, Model, ModelRecord};
 
 pub use maud;
 
@@ -21,6 +21,13 @@ where
     form_for(model)
 }
 
+pub fn form_for_invalid<M>(model: &M) -> FormFor<'_, M>
+where
+    M: ModelRecord + InvalidModel,
+{
+    form_for(model).errors(model.errors())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormMethod {
     Get,
@@ -31,14 +38,14 @@ pub enum FormMethod {
 }
 
 impl FormMethod {
-    fn form_method(self) -> &'static str {
+    pub fn form_method(self) -> &'static str {
         match self {
             Self::Get => "get",
             Self::Post | Self::Put | Self::Patch | Self::Delete => "post",
         }
     }
 
-    fn method_override(self) -> Option<&'static str> {
+    pub fn method_override(self) -> Option<&'static str> {
         match self {
             Self::Get | Self::Post => None,
             Self::Put => Some("put"),
@@ -120,6 +127,7 @@ where
     id: Option<String>,
     class: Option<String>,
     param_name: Option<String>,
+    errors: Option<&'a Errors<M::Column>>,
     submit_label: Option<String>,
     include_submit: bool,
 }
@@ -136,6 +144,7 @@ where
             id: None,
             class: None,
             param_name: None,
+            errors: None,
             submit_label: None,
             include_submit: true,
         }
@@ -190,6 +199,11 @@ where
         self
     }
 
+    pub fn errors(mut self, errors: &'a Errors<M::Column>) -> Self {
+        self.errors = Some(errors);
+        self
+    }
+
     pub fn submit_label(mut self, label: impl Into<String>) -> Self {
         self.submit_label = Some(label.into());
         self
@@ -210,7 +224,7 @@ where
     }
 
     pub fn builder(&self) -> FormBuilder<'_, M> {
-        FormBuilder::new(self.model, self.resolved_param_name())
+        FormBuilder::new(self.model, self.resolved_param_name(), self.errors)
     }
 
     pub fn render_markup(&self) -> Markup {
@@ -271,6 +285,7 @@ where
 {
     model: &'a M,
     param_name: String,
+    errors: Option<&'a Errors<M::Column>>,
     fields: Vec<FormField>,
 }
 
@@ -278,10 +293,11 @@ impl<'a, M> FormBuilder<'a, M>
 where
     M: Model,
 {
-    fn new(model: &'a M, param_name: String) -> Self {
+    fn new(model: &'a M, param_name: String, errors: Option<&'a Errors<M::Column>>) -> Self {
         Self {
             model,
             param_name,
+            errors,
             fields: fields_for(model),
         }
     }
@@ -296,6 +312,10 @@ where
 
     pub fn fields(&self) -> &[FormField] {
         &self.fields
+    }
+
+    pub fn errors(&self) -> Option<&Errors<M::Column>> {
+        self.errors
     }
 
     pub fn field_name<C>(&self, column: C) -> String
@@ -337,6 +357,52 @@ where
             .iter()
             .find(|field| field.name == column_name)
             .map(|field| &field.value)
+    }
+
+    pub fn error_messages<C>(&self, column: C) -> Vec<&str>
+    where
+        C: Column,
+    {
+        self.error_messages_named(column.as_str())
+    }
+
+    pub fn error_messages_named(&self, column_name: impl AsRef<str>) -> Vec<&str> {
+        let Some(errors) = self.errors else {
+            return Vec::new();
+        };
+        let column_name = column_name.as_ref();
+
+        errors
+            .all()
+            .iter()
+            .filter_map(|error| {
+                error
+                    .column()
+                    .is_some_and(|column| column.as_str() == column_name)
+                    .then_some(error.message())
+            })
+            .collect()
+    }
+
+    pub fn field_errors<C>(&self, column: C) -> Markup
+    where
+        C: Column,
+    {
+        self.field_errors_named(column.as_str())
+    }
+
+    pub fn field_errors_named(&self, column_name: impl AsRef<str>) -> Markup {
+        let messages = self.error_messages_named(column_name);
+
+        html! {
+            @if !messages.is_empty() {
+                div class="field-errors" {
+                    @for message in messages {
+                        span class="field-error" { (message) }
+                    }
+                }
+            }
+        }
     }
 
     pub fn label<C>(&self, column: C, text: impl Render) -> Markup
@@ -465,6 +531,7 @@ where
                 div class="field" {
                     (self.label_named(field.name, human_label(field.name)))
                     (self.default_input(field))
+                    (self.field_errors_named(field.name))
                 }
             }
             @if include_submit {
@@ -638,18 +705,29 @@ fn sanitize_id_part(value: &str) -> String {
 mod tests {
     use super::*;
     use maud::Render;
+    use seekwel::NewModel;
     use seekwel::connection::Connection;
 
-    #[seekwel::model]
+    struct PersonValidator;
+
+    #[seekwel::model(validator = PersonValidator)]
     struct Person {
         id: u64,
         name: String,
         age: Option<u8>,
     }
 
+    impl<S> seekwel::Validator<Person<S>> for PersonValidator {
+        fn validate(person: &Person<S>, errors: &mut seekwel::Errors<PersonColumns>) {
+            if person.name.trim().is_empty() {
+                errors.add(PersonColumns::Name, "is required");
+            }
+        }
+    }
+
     fn setup() -> Person {
         let _ = Connection::memory();
-        let _ = Person::create_table();
+        let _ = <Person as seekwel::Model>::create_table();
         Person::builder()
             .name("Pat")
             .age(Some(42))
@@ -659,6 +737,15 @@ mod tests {
 
     fn draft() -> Person<seekwel::NewRecord> {
         Person::builder().name("Pat").age(Some(42)).build().unwrap()
+    }
+
+    fn invalid_draft() -> Person<seekwel::Invalid<seekwel::NewRecord, PersonColumns>> {
+        let person = Person::builder().name("").age(Some(42)).build().unwrap();
+
+        match person.save() {
+            Err(seekwel::SaveError::Invalid(invalid)) => invalid,
+            _ => panic!("expected invalid model"),
+        }
     }
 
     #[test]
@@ -697,6 +784,37 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains(r#"<input type="hidden" name="_method" value="patch">"#));
+    }
+
+    #[test]
+    fn renders_field_errors_for_invalid_record() {
+        let person = invalid_draft();
+        let rendered = form_for_invalid(&person).render().into_string();
+
+        assert!(!rendered.contains(r#"class="errors""#));
+        assert!(
+            rendered.contains(
+                r#"<div class="field-errors"><span class="field-error">is required</span></div>"#
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn renders_custom_field_errors() {
+        let person = invalid_draft();
+        let rendered = form_for_invalid(&person)
+            .fields(|f| {
+                html! {
+                    (f.field_errors(PersonColumns::Name))
+                }
+            })
+            .into_string();
+
+        assert_eq!(
+            rendered,
+            r#"<form action="/people" method="post"><div class="field-errors"><span class="field-error">is required</span></div></form>"#
+        );
     }
 
     #[test]

@@ -258,9 +258,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "seekwel"
-version = "0.1.9"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b5ec49318f7eebcd0ecb5e5960356ff386f09b4b2f4e31df4dca4d43b6f20a2"
+checksum = "b6c7003e2cf723e3e32528d5903d437453bc418706e887df56024cf563a1915d"
 dependencies = [
  "rusqlite",
  "seekwel-macros",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "seekwel-forms"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "inflection",
  "maud",
@@ -278,9 +278,9 @@ dependencies = [
 
 [[package]]
 name = "seekwel-macros"
-version = "0.1.9"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82bdd40afc1feb59401ad71d02ba3d9bdbfe39bc556e86c266f747b4c0205d3f"
+checksum = "8cf6edf60d283f232589988bc2180c53613e452806cb96a4ef60b89f56ac8e9d"
 dependencies = [
  "proc-macro2",
  "quote",
