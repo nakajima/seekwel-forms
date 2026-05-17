@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use inflection::{plural, singular};
 use maud::{Markup, Render, html};
 use rusqlite::types::Value;
-use seekwel::model::{Column, ColumnDef, Errors, InvalidModel, Model, ModelRecord};
+use seekwel::model::{Column, ColumnDef, Errors, Model, ModelRecord};
 
 pub use maud;
 
@@ -12,20 +12,6 @@ where
     M: ModelRecord,
 {
     FormFor::new(model)
-}
-
-pub fn form_for_persisted<M>(model: &M) -> FormFor<'_, M>
-where
-    M: ModelRecord,
-{
-    form_for(model)
-}
-
-pub fn form_for_invalid<M>(model: &M) -> FormFor<'_, M>
-where
-    M: ModelRecord + InvalidModel,
-{
-    form_for(model).errors(model.errors())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +102,255 @@ pub struct FormField {
     pub value: FieldValue,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ElementAttrs {
+    attrs: Vec<ElementAttr>,
+}
+
+impl ElementAttrs {
+    fn set(&mut self, name: impl Into<String>, value: impl Render) {
+        self.set_markup(name, value.render());
+    }
+
+    fn set_markup(&mut self, name: impl Into<String>, value: Markup) {
+        let name = name.into();
+        assert_valid_attribute_name(&name);
+
+        if let Some(attr) = self.find_mut(&name) {
+            attr.value = Some(value);
+        } else {
+            self.attrs.push(ElementAttr {
+                name,
+                value: Some(value),
+            });
+        }
+    }
+
+    fn set_empty(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        assert_valid_attribute_name(&name);
+
+        if let Some(attr) = self.find_mut(&name) {
+            attr.value = None;
+        } else {
+            self.attrs.push(ElementAttr { name, value: None });
+        }
+    }
+
+    fn id(&mut self, id: impl Into<String>) {
+        self.set("id", id.into());
+    }
+
+    fn class(&mut self, class: impl Into<String>) {
+        let value = class.into().render();
+
+        if let Some(attr) = self.find_mut("class") {
+            match &mut attr.value {
+                Some(existing) => {
+                    if !existing.0.is_empty() {
+                        existing.0.push(' ');
+                    }
+                    existing.0.push_str(&value.0);
+                }
+                None => attr.value = Some(value),
+            }
+        } else {
+            self.attrs.push(ElementAttr {
+                name: "class".to_string(),
+                value: Some(value),
+            });
+        }
+    }
+
+    fn extend(&mut self, attrs: &Self) {
+        for attr in &attrs.attrs {
+            match &attr.value {
+                Some(value) => self.set_markup(attr.name.clone(), value.clone()),
+                None => self.set_empty(attr.name.clone()),
+            }
+        }
+    }
+
+    fn render_to(&self, buffer: &mut String) {
+        for attr in &self.attrs {
+            attr.render_to(buffer);
+        }
+    }
+
+    fn find_mut(&mut self, name: &str) -> Option<&mut ElementAttr> {
+        self.attrs
+            .iter_mut()
+            .find(|attr| attr.name.eq_ignore_ascii_case(name))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ElementAttr {
+    name: String,
+    value: Option<Markup>,
+}
+
+impl ElementAttr {
+    fn render_to(&self, buffer: &mut String) {
+        buffer.push(' ');
+        buffer.push_str(&self.name);
+
+        if let Some(value) = &self.value {
+            buffer.push_str("=\"");
+            value.render_to(buffer);
+            buffer.push('"');
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FormElement {
+    tag: &'static str,
+    attrs: ElementAttrs,
+    body: Option<Markup>,
+}
+
+impl FormElement {
+    fn new(tag: &'static str) -> Self {
+        Self {
+            tag,
+            attrs: ElementAttrs::default(),
+            body: None,
+        }
+    }
+
+    fn with_body(tag: &'static str, body: Markup) -> Self {
+        Self {
+            tag,
+            attrs: ElementAttrs::default(),
+            body: Some(body),
+        }
+    }
+
+    fn with_attrs_and_body(tag: &'static str, attrs: ElementAttrs, body: Markup) -> Self {
+        Self {
+            tag,
+            attrs,
+            body: Some(body),
+        }
+    }
+
+    fn empty_attr(mut self, name: impl Into<String>) -> Self {
+        self.attrs.set_empty(name);
+        self
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.attrs.id(id);
+        self
+    }
+
+    pub fn class(mut self, class: impl Into<String>) -> Self {
+        self.attrs.class(class);
+        self
+    }
+
+    pub fn attr(mut self, name: impl Into<String>, value: impl Render) -> Self {
+        self.attrs.set(name, value);
+        self
+    }
+}
+
+impl Render for FormElement {
+    fn render_to(&self, buffer: &mut String) {
+        buffer.push('<');
+        buffer.push_str(self.tag);
+        self.attrs.render_to(buffer);
+        buffer.push('>');
+
+        if let Some(body) = &self.body {
+            body.render_to(buffer);
+            buffer.push_str("</");
+            buffer.push_str(self.tag);
+            buffer.push('>');
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckboxField {
+    hidden: FormElement,
+    checkbox: FormElement,
+}
+
+impl CheckboxField {
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.checkbox = self.checkbox.id(id);
+        self
+    }
+
+    pub fn class(mut self, class: impl Into<String>) -> Self {
+        self.checkbox = self.checkbox.class(class);
+        self
+    }
+
+    pub fn attr(mut self, name: impl Into<String>, value: impl Render) -> Self {
+        self.checkbox = self.checkbox.attr(name, value);
+        self
+    }
+}
+
+impl Render for CheckboxField {
+    fn render_to(&self, buffer: &mut String) {
+        self.hidden.render_to(buffer);
+        self.checkbox.render_to(buffer);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldErrors<'a> {
+    messages: Vec<&'a str>,
+    attrs: ElementAttrs,
+}
+
+impl<'a> FieldErrors<'a> {
+    fn new(messages: Vec<&'a str>) -> Self {
+        let mut attrs = ElementAttrs::default();
+        attrs.class("field-errors");
+        Self { messages, attrs }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.attrs.id(id);
+        self
+    }
+
+    pub fn class(mut self, class: impl Into<String>) -> Self {
+        self.attrs.class(class);
+        self
+    }
+
+    pub fn attr(mut self, name: impl Into<String>, value: impl Render) -> Self {
+        self.attrs.set(name, value);
+        self
+    }
+}
+
+impl Render for FieldErrors<'_> {
+    fn render_to(&self, buffer: &mut String) {
+        if self.messages.is_empty() {
+            return;
+        }
+
+        buffer.push_str("<div");
+        self.attrs.render_to(buffer);
+        buffer.push('>');
+
+        for message in &self.messages {
+            buffer.push_str(r#"<span class="field-error">"#);
+            message.render_to(buffer);
+            buffer.push_str("</span>");
+        }
+
+        buffer.push_str("</div>");
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FormFor<'a, M>
 where
@@ -124,10 +359,9 @@ where
     model: &'a M,
     action: Option<String>,
     method: Option<FormMethod>,
-    id: Option<String>,
-    class: Option<String>,
+    attrs: ElementAttrs,
     param_name: Option<String>,
-    errors: Option<&'a Errors<M::Column>>,
+    errors: &'a Errors<M::Column>,
     submit_label: Option<String>,
     include_submit: bool,
 }
@@ -141,10 +375,9 @@ where
             model,
             action: None,
             method: None,
-            id: None,
-            class: None,
+            attrs: ElementAttrs::default(),
             param_name: None,
-            errors: None,
+            errors: model.errors(),
             submit_label: None,
             include_submit: true,
         }
@@ -185,12 +418,17 @@ where
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+        self.attrs.id(id);
         self
     }
 
     pub fn class(mut self, class: impl Into<String>) -> Self {
-        self.class = Some(class.into());
+        self.attrs.class(class);
+        self
+    }
+
+    pub fn attr(mut self, name: impl Into<String>, value: impl Render) -> Self {
+        self.attrs.set(name, value);
         self
     }
 
@@ -200,7 +438,7 @@ where
     }
 
     pub fn errors(mut self, errors: &'a Errors<M::Column>) -> Self {
-        self.errors = Some(errors);
+        self.errors = errors;
         self
     }
 
@@ -214,12 +452,13 @@ where
         self
     }
 
-    pub fn fields<F>(self, fields: F) -> Markup
+    pub fn fields<F, R>(self, fields: F) -> Markup
     where
-        F: FnOnce(&FormBuilder<'_, M>) -> Markup,
+        F: FnOnce(&FormBuilder<'_, M>) -> R,
+        R: Render,
     {
         let builder = self.builder();
-        let body = fields(&builder);
+        let body = fields(&builder).render();
         self.render_form(body)
     }
 
@@ -242,14 +481,18 @@ where
         let form_method = method.form_method();
         let override_method = method.method_override();
 
-        html! {
-            form action=(action) method=(form_method) id=[self.id.as_deref()] class=[self.class.as_deref()] {
-                @if let Some(override_method) = override_method {
-                    input type="hidden" name="_method" value=(override_method);
-                }
-                (body)
+        let body = html! {
+            @if let Some(override_method) = override_method {
+                input type="hidden" name="_method" value=(override_method);
             }
-        }
+            (body)
+        };
+        let mut attrs = ElementAttrs::default();
+        attrs.set("action", action);
+        attrs.set("method", form_method);
+        attrs.extend(&self.attrs);
+
+        FormElement::with_attrs_and_body("form", attrs, body).render()
     }
 
     fn resolved_method(&self) -> FormMethod {
@@ -285,7 +528,7 @@ where
 {
     model: &'a M,
     param_name: String,
-    errors: Option<&'a Errors<M::Column>>,
+    errors: &'a Errors<M::Column>,
     fields: Vec<FormField>,
 }
 
@@ -293,7 +536,7 @@ impl<'a, M> FormBuilder<'a, M>
 where
     M: Model,
 {
-    fn new(model: &'a M, param_name: String, errors: Option<&'a Errors<M::Column>>) -> Self {
+    fn new(model: &'a M, param_name: String, errors: &'a Errors<M::Column>) -> Self {
         Self {
             model,
             param_name,
@@ -314,7 +557,7 @@ where
         &self.fields
     }
 
-    pub fn errors(&self) -> Option<&Errors<M::Column>> {
+    pub fn errors(&self) -> &Errors<M::Column> {
         self.errors
     }
 
@@ -367,12 +610,9 @@ where
     }
 
     pub fn error_messages_named(&self, column_name: impl AsRef<str>) -> Vec<&str> {
-        let Some(errors) = self.errors else {
-            return Vec::new();
-        };
         let column_name = column_name.as_ref();
 
-        errors
+        self.errors
             .all()
             .iter()
             .filter_map(|error| {
@@ -384,82 +624,70 @@ where
             .collect()
     }
 
-    pub fn field_errors<C>(&self, column: C) -> Markup
+    pub fn field_errors<C>(&self, column: C) -> FieldErrors<'_>
     where
         C: Column,
     {
         self.field_errors_named(column.as_str())
     }
 
-    pub fn field_errors_named(&self, column_name: impl AsRef<str>) -> Markup {
-        let messages = self.error_messages_named(column_name);
-
-        html! {
-            @if !messages.is_empty() {
-                div class="field-errors" {
-                    @for message in messages {
-                        span class="field-error" { (message) }
-                    }
-                }
-            }
-        }
+    pub fn field_errors_named(&self, column_name: impl AsRef<str>) -> FieldErrors<'_> {
+        FieldErrors::new(self.error_messages_named(column_name))
     }
 
-    pub fn label<C>(&self, column: C, text: impl Render) -> Markup
+    pub fn label<C>(&self, column: C, text: impl Render) -> FormElement
     where
         C: Column,
     {
         self.label_named(column.as_str(), text)
     }
 
-    pub fn label_named(&self, column_name: impl AsRef<str>, text: impl Render) -> Markup {
+    pub fn label_named(&self, column_name: impl AsRef<str>, text: impl Render) -> FormElement {
         let id = self.field_id_named(column_name);
-        html! {
-            label for=(id) { (text) }
-        }
+        FormElement::with_body("label", text.render()).attr("for", id)
     }
 
-    pub fn text_field<C>(&self, column: C) -> Markup
+    pub fn text_field<C>(&self, column: C) -> FormElement
     where
         C: Column,
     {
         self.input("text", column)
     }
 
-    pub fn text_field_named(&self, column_name: impl AsRef<str>) -> Markup {
+    pub fn text_field_named(&self, column_name: impl AsRef<str>) -> FormElement {
         self.input_named("text", column_name)
     }
 
-    pub fn number_field<C>(&self, column: C) -> Markup
+    pub fn number_field<C>(&self, column: C) -> FormElement
     where
         C: Column,
     {
         self.input("number", column)
     }
 
-    pub fn number_field_named(&self, column_name: impl AsRef<str>) -> Markup {
+    pub fn number_field_named(&self, column_name: impl AsRef<str>) -> FormElement {
         self.input_named("number", column_name)
     }
 
-    pub fn hidden_field<C>(&self, column: C) -> Markup
+    pub fn hidden_field<C>(&self, column: C) -> FormElement
     where
         C: Column,
     {
         self.input("hidden", column)
     }
 
-    pub fn hidden_field_named(&self, column_name: impl AsRef<str>) -> Markup {
+    pub fn hidden_field_named(&self, column_name: impl AsRef<str>) -> FormElement {
         self.input_named("hidden", column_name)
     }
 
-    pub fn textarea<C>(&self, column: C) -> Markup
+    pub fn textarea<C>(&self, column: C) -> FormElement
     where
         C: Column,
     {
         self.textarea_named(column.as_str())
     }
 
-    pub fn textarea_named(&self, column_name: impl AsRef<str>) -> Markup {
+    pub fn textarea_named(&self, column_name: impl AsRef<str>) -> FormElement {
         let column_name = column_name.as_ref();
         let name = self.field_name_named(column_name);
         let id = self.field_id_named(column_name);
@@ -468,19 +696,19 @@ where
             .and_then(FieldValue::as_input_value)
             .unwrap_or_default();
 
-        html! {
-            textarea name=(name) id=(id) { (value) }
-        }
+        FormElement::with_body("textarea", value.render())
+            .attr("name", name)
+            .id(id)
     }
 
-    pub fn checkbox<C>(&self, column: C) -> Markup
+    pub fn checkbox<C>(&self, column: C) -> CheckboxField
     where
         C: Column,
     {
         self.checkbox_named(column.as_str())
     }
 
-    pub fn checkbox_named(&self, column_name: impl AsRef<str>) -> Markup {
+    pub fn checkbox_named(&self, column_name: impl AsRef<str>) -> CheckboxField {
         let column_name = column_name.as_ref();
         let name = self.field_name_named(column_name);
         let id = self.field_id_named(column_name);
@@ -488,37 +716,57 @@ where
             .value_named(column_name)
             .is_some_and(FieldValue::is_truthy);
 
-        html! {
-            input type="hidden" name=(name) value="0";
-            input type="checkbox" name=(name) id=(id) value="1" checked[checked];
+        let hidden = FormElement::new("input")
+            .attr("type", "hidden")
+            .attr("name", name.clone())
+            .attr("value", "0");
+        let mut checkbox = FormElement::new("input")
+            .attr("type", "checkbox")
+            .attr("name", name)
+            .id(id)
+            .attr("value", "1");
+
+        if checked {
+            checkbox = checkbox.empty_attr("checked");
         }
+
+        CheckboxField { hidden, checkbox }
     }
 
-    pub fn submit(&self, label: impl Render) -> Markup {
-        html! {
-            input type="submit" value=(label);
-        }
+    pub fn submit(&self, label: impl Render) -> FormElement {
+        FormElement::new("input")
+            .attr("type", "submit")
+            .attr("value", label)
     }
 
-    pub fn input<C>(&self, input_type: impl AsRef<str>, column: C) -> Markup
+    pub fn input<C>(&self, input_type: impl AsRef<str>, column: C) -> FormElement
     where
         C: Column,
     {
         self.input_named(input_type, column.as_str())
     }
 
-    pub fn input_named(&self, input_type: impl AsRef<str>, column_name: impl AsRef<str>) -> Markup {
+    pub fn input_named(
+        &self,
+        input_type: impl AsRef<str>,
+        column_name: impl AsRef<str>,
+    ) -> FormElement {
         let column_name = column_name.as_ref();
         let name = self.field_name_named(column_name);
         let id = self.field_id_named(column_name);
         let value = self
             .value_named(column_name)
             .and_then(FieldValue::as_input_value);
-        let input_type = input_type.as_ref().to_string();
+        let mut input = FormElement::new("input")
+            .attr("type", input_type.as_ref())
+            .attr("name", name)
+            .id(id);
 
-        html! {
-            input type=(input_type) name=(name) id=(id) value=[value];
+        if let Some(value) = value {
+            input = input.attr("value", value);
         }
+
+        input
     }
 
     fn default_fields(&self, submit_label: Option<&str>, include_submit: bool) -> Markup {
@@ -542,26 +790,29 @@ where
 
     fn default_input(&self, field: &FormField) -> Markup {
         match field.sql_type {
-            "INTEGER" => self.number_field_named(field.name),
+            "INTEGER" => self.number_field_named(field.name).render(),
             "REAL" => {
                 let column_name = field.name;
                 let name = self.field_name_named(column_name);
                 let id = self.field_id_named(column_name);
-                let value = field.value.as_input_value();
+                let mut input = FormElement::new("input")
+                    .attr("type", "number")
+                    .attr("step", "any")
+                    .attr("name", name)
+                    .id(id);
 
-                html! {
-                    input type="number" step="any" name=(name) id=(id) value=[value];
+                if let Some(value) = field.value.as_input_value() {
+                    input = input.attr("value", value);
                 }
-            }
-            "BLOB" => {
-                let name = self.field_name_named(field.name);
-                let id = self.field_id_named(field.name);
 
-                html! {
-                    input type="file" name=(name) id=(id);
-                }
+                input.render()
             }
-            _ => self.text_field_named(field.name),
+            "BLOB" => FormElement::new("input")
+                .attr("type", "file")
+                .attr("name", self.field_name_named(field.name))
+                .id(self.field_id_named(field.name))
+                .render(),
+            _ => self.text_field_named(field.name).render(),
         }
     }
 }
@@ -701,6 +952,20 @@ fn sanitize_id_part(value: &str) -> String {
         .collect()
 }
 
+fn assert_valid_attribute_name(name: &str) {
+    assert!(
+        is_valid_attribute_name(name),
+        "invalid HTML attribute name: {name:?}"
+    );
+}
+
+fn is_valid_attribute_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|ch| {
+            !ch.is_ascii_whitespace() && !matches!(ch, '"' | '\'' | '<' | '>' | '/' | '=')
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,7 +1054,7 @@ mod tests {
     #[test]
     fn renders_field_errors_for_invalid_record() {
         let person = invalid_draft();
-        let rendered = form_for_invalid(&person).render().into_string();
+        let rendered = form_for(&person).render().into_string();
 
         assert!(!rendered.contains(r#"class="errors""#));
         assert!(
@@ -803,7 +1068,7 @@ mod tests {
     #[test]
     fn renders_custom_field_errors() {
         let person = invalid_draft();
-        let rendered = form_for_invalid(&person)
+        let rendered = form_for(&person)
             .fields(|f| {
                 html! {
                     (f.field_errors(PersonColumns::Name))
@@ -839,5 +1104,109 @@ mod tests {
             )
         );
         assert!(rendered.contains(r#"<input type="submit" value="Update">"#));
+    }
+
+    #[test]
+    fn renders_custom_form_attributes() {
+        let person = draft();
+        let rendered = form_for(&person)
+            .id("person-form")
+            .class("stack")
+            .class("wide")
+            .attr("data-controller", "people")
+            .without_submit()
+            .render()
+            .into_string();
+
+        assert!(
+            rendered.contains(
+                r#"<form action="/people" method="post" id="person-form" class="stack wide" data-controller="people">"#
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn renders_custom_element_attributes() {
+        let person = setup();
+        let rendered = form_for(&person)
+            .fields(|f| {
+                html! {
+                    (f.label(PersonColumns::Name, "Display name")
+                        .class("label")
+                        .attr("data-label", "name"))
+                    (f.text_field(PersonColumns::Name)
+                        .id("display_name")
+                        .class("input")
+                        .attr("data-controller", "person-name")
+                        .attr("data-value", "\"Pat\" & <Pat>"))
+                    (f.textarea(PersonColumns::Name).class("textarea"))
+                    (f.submit("Update").class("button"))
+                }
+            })
+            .into_string();
+
+        assert!(
+            rendered.contains(
+                r#"<label for="person_name" class="label" data-label="name">Display name</label>"#
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                r#"<input type="text" name="person[name]" id="display_name" value="Pat" class="input" data-controller="person-name" data-value="&quot;Pat&quot; &amp; &lt;Pat&gt;">"#
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                r#"<textarea name="person[name]" id="person_name" class="textarea">Pat</textarea>"#
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"<input type="submit" value="Update" class="button">"#),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn renders_custom_field_error_attributes() {
+        let person = invalid_draft();
+        let rendered = form_for(&person)
+            .fields(|f| {
+                html! {
+                    (f.field_errors(PersonColumns::Name)
+                        .id("name-errors")
+                        .class("stack")
+                        .attr("data-errors", "name"))
+                }
+            })
+            .into_string();
+
+        assert_eq!(
+            rendered,
+            r#"<form action="/people" method="post"><div class="field-errors stack" id="name-errors" data-errors="name"><span class="field-error">is required</span></div></form>"#
+        );
+    }
+
+    #[test]
+    fn renders_custom_checkbox_attributes_on_visible_input() {
+        let person = draft();
+        let rendered = form_for(&person)
+            .fields(|f| {
+                html! {
+                    (f.checkbox(PersonColumns::Age)
+                        .id("age_check")
+                        .class("check")
+                        .attr("data-checkbox", "age"))
+                }
+            })
+            .into_string();
+
+        assert_eq!(
+            rendered,
+            r#"<form action="/people" method="post"><input type="hidden" name="person[age]" value="0"><input type="checkbox" name="person[age]" id="age_check" value="1" checked class="check" data-checkbox="age"></form>"#
+        );
     }
 }
